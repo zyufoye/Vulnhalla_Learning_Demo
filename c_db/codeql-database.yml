@@ -1,0 +1,45 @@
+---
+sourceLocationPrefix: D:\Projects\Vulnhalla_Learning_Demo\test_demo
+baselineLinesOfCode: 22
+unicodeNewlines: false
+columnKind: utf8
+primaryLanguage: cpp
+inProgress:
+  primaryLanguage: cpp
+  installedExtractors:
+    actions:
+     - D:/Projects/codeql-win64/codeql/actions
+    cpp:
+     - D:/Projects/codeql-win64/codeql/cpp
+    csharp:
+     - D:/Projects/codeql-win64/codeql/csharp
+    csv:
+     - D:/Projects/codeql-win64/codeql/csv
+    go:
+     - D:/Projects/codeql-win64/codeql/go
+    html:
+     - D:/Projects/codeql-win64/codeql/html
+    java:
+     - D:/Projects/codeql-win64/codeql/java
+    javascript:
+     - D:/Projects/codeql-win64/codeql/javascript
+    properties:
+     - D:/Projects/codeql-win64/codeql/properties
+    python:
+     - D:/Projects/codeql-win64/codeql/python
+    ruby:
+     - D:/Projects/codeql-win64/codeql/ruby
+    rust:
+     - D:/Projects/codeql-win64/codeql/rust
+    swift:
+     - D:/Projects/codeql-win64/codeql/swift
+    xml:
+     - D:/Projects/codeql-win64/codeql/xml
+    yaml:
+     - D:/Projects/codeql-win64/codeql/yaml
+creationMetadata:
+  cliVersion: 2.23.6
+  creationTime: 2025-12-16T11:49:49.407779100Z
+overlayBaseDatabase: false
+overlayDatabase: false
+finalised: false
