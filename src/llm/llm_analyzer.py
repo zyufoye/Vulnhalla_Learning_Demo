@@ -43,12 +43,16 @@ class LLMAnalyzer:
         self.model: Optional[str] = None
 
         # Tools configuration: A set of function calls the LLM can invoke
+        # 工具配置：定义了一组 LLM 可以调用的函数接口（Function Calling / Tools）
+        # 这些工具赋予了 AI "阅读代码" 的能力，使其不再局限于初始提供的代码片段
         self.tools: List[Dict[str, Any]] = [
             {
                 "type": "function",
                 "function": {
                     "name": "get_function_code",
                     "description": "Retrieves the code for a missing function code.",
+                    # 工具 1：获取函数源码
+                    # 当 AI 看到一个函数调用（例如 process_data()）但不知道其内部实现时使用
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -72,6 +76,10 @@ class LLMAnalyzer:
                         "Retrieves the caller function of the function with the issue. "
                         "Call it repeatedly to climb further up the call chain."
                     ),
+                    # 工具 2：获取调用者（向上回溯）
+                    # 这是进行污点分析（Taint Analysis）的关键。
+                    # 如果 AI 发现某个函数的参数有问题，它可以使用此工具查看“是谁把这个脏数据传进来的”，
+                    # 从而沿着调用链一步步向上追溯漏洞源头。
                     "parameters": {
                         "type": "object",
                         "properties": {},
@@ -86,6 +94,9 @@ class LLMAnalyzer:
                         "Retrieves class / struct / union implementation (anywhere in code). "
                         "If you need a specific method from that class, use get_function_code instead."
                     ),
+                    # 工具 3：获取类/结构体定义
+                    # C++ 中对象的状态往往存储在成员变量中。要理解某个方法是否安全，
+                    # 往往需要查看整个类的定义（包括成员变量和其他 helper 方法）。
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -106,6 +117,9 @@ class LLMAnalyzer:
                         "Retrieves global variable definition (anywhere in code). "
                         "If it's a variable inside a class, request the class instead."
                     ),
+                    # 工具 4：获取全局变量
+                    # 在嵌入式或旧式 C 代码中，全局配置或状态变量经常影响程序逻辑。
+                    # 此工具帮助 AI 理解那些“凭空出现”的变量是从哪里定义的。
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -126,6 +140,10 @@ class LLMAnalyzer:
                 "function": {
                     "name": "get_macro",
                     "description": "Retrieves a macro definition (anywhere in code).",
+                    # 工具 5：获取宏定义
+                    # 对于 C/C++ 安全审计至关重要！
+                    # 很多看似安全的函数调用（如 SAFE_COPY）实际上可能是一个有问题的宏。
+                    # 或者某个常量 MAX_SIZE 到底是多少？不看宏定义根本无法判断是否溢出。
                     "parameters": {
                         "type": "object",
                         "properties": {
