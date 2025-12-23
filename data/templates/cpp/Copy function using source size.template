@@ -1,0 +1,8 @@
+This static analysis checks if we are using source size in copy functions. This analysis does not check if there is a correlation between source and destination. This is your job!
+1. What size are we using in the copy? Are we really using the source size and not the destination?
+2. Does the source buffer point inside the destination buffer?
+3. What is the size of the source buffer and what is the size of the destination? Is destination size derived from source? Answer this question only if source is not pointer inside dest!
+4. Can the source buffer be bigger than the destination? (yes/no)
+Use the tools to get all data needed.
+If source is smaller than destination, there is no issue of buffer overflow!
+Only if source is bigger than destination it's a problem of buffer overflow!
