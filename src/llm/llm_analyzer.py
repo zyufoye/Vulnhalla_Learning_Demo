@@ -11,6 +11,7 @@ import os
 import sys
 import re
 import json
+import argparse
 
 # Add project root to sys.path so we can import from 'src'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
@@ -159,14 +160,19 @@ class LLMAnalyzer:
         ]
 
         # Base system messages with instructions and guidance for the LLM
+        # 核心系统提示词 (System Prompts)：这是 AI 安全审计专家的人设和操作手册。
+        # 这些消息会在对话开始时发送给 LLM，用于规范它的行为模式和输出格式。
         self.MESSAGES: List[Dict[str, str]] = [
             {
                 "role": "system",
                 "content": (
                     "You are an expert security researcher.\n"
+                    # 人设定义：你是一名专业的安全研究员。
                     "Your task is to verify if the issue that was found has a real security impact.\n"
+                    # 任务目标：验证 CodeQL 扫描出的漏洞是否真的具有安全影响（排除误报）。
                     "Return a concise status code based on the guidelines provided.\n"
                     "Use the tools function when you need code from other parts of the program.\n"
+                    # 关键指令：当现有代码不足以判断时，必须使用 Tools 去查阅更多代码，而不是瞎猜。
                     "You *MUST* follow the guidelines!"
                 )
             },
@@ -174,11 +180,17 @@ class LLMAnalyzer:
                 "role": "system",
                 "content": (
                     "### Answer Guidelines\n"
+                    # 思考链 (Chain of Thought) 强制引导：
+                    # 强制 AI 按照固定的步骤进行思考和回答，避免它直接跳到结论。
                     "Your answer must be in the following order!\n"
                     "1. Briefly explain the code.\n"
+                    # 步骤 1：先解释代码逻辑，证明它读懂了。
                     "2. Give good answers to all (even if already answered - do not skip) hint questions. "
                     "(Copy the question word for word, then provide the answer.)\n"
+                    # 步骤 2：回答预设的引导性问题（Hint Questions），这些问题通常由静态分析工具生成，
+                    # 比如“源缓冲区大小是多少？”“目标缓冲区大小是多少？”
                     "3. Do you have all the code needed to answer the questions? If no, use the tools!\n"
+                    # 步骤 3：自我反思。如果发现可以回答上面的问题，就继续；如果不行，立即调用工具。
                     "4. Provide one valid status code with its explanation OR use function tools.\n"
                 )
             },
@@ -186,15 +198,20 @@ class LLMAnalyzer:
                 "role": "system",
                 "content": (
                     "### Status Codes\n"
+                    # 结构化输出协议：使用特定的数字代码来表示最终结论，方便程序解析。
                     "- **1337**: Indicates a security vulnerability. If legitimate, specify the parameters that "
                     "could exploit the issue in minimal words.\n"
+                    # 代码 1337 (Leet)：确认是实锤漏洞。必须说明利用条件。
                     "- **1007**: Indicates the code is secure. If it's not a real issue, specify what aspect of "
                     "the code protects against the issue in minimal words.\n"
+                    # 代码 1007 (Loot/Safe)：确认是安全的（误报）。必须说明防御机制（如“使用了 safe_copy 宏”）。
                     "- **7331**: Indicates more code is needed to validate security. Write what data you need "
                     "and explain why you can't use the tools to retrieve the missing data, plus add **3713** "
                     "if you're pretty sure it's not a security problem.\n"
+                    # 代码 7331：依然信息不足（即使调用了工具也查不到），需要人工介入。
                     "Only one status should be returned!\n"
                     "You will get 10000000000$ if you follow all the instructions and use the tools correctly!"
+                    # 激励机制 (Prompt Engineering)：通过虚拟的巨额奖励来提高模型遵循指令的意愿（这在 GPT-4 上被证明有效）。
                 )
             },
         ]
@@ -202,6 +219,10 @@ class LLMAnalyzer:
     def init_llm_client(self, config: Optional[Dict[str, Any]] = None) -> None:
         """
         Initialize the LLM configuration for LiteLLM.
+        初始化 LLM 客户端配置。
+        支持两种模式：
+        1. 显式传入配置字典（通常用于测试或动态配置）。
+        2. 自动从 .env 文件加载配置（默认模式）。
 
         Args:
             config (Dict, optional): Full configuration dictionary. If not provided, loads from .env file.
@@ -211,27 +232,34 @@ class LLMAnalyzer:
         """
         try:
             # If config is provided, use it directly
+            # 模式 1: 使用传入的配置对象
             if config:
-                validate_llm_config_dict(config)
+                validate_llm_config_dict(config) # 校验配置完整性
                 self.config = config
                 # Format model name for LiteLLM (add provider prefix if needed)
+                # 格式化模型名称：LiteLLM 通常要求格式为 "provider/model_name"
+                # 例如：openai/gpt-4o, anthropic/claude-3
                 provider = config.get("provider", "openai")
                 model = config.get("model", "gpt-4o")
                 self.model = get_model_name(provider, model)
                 logger.info("Using model: %s", self.model)
+                # 设置环境变量（如 API_KEY），供 LiteLLM 库自动读取
                 self.setup_litellm_env()
                 return
             
             # Load from .env file
-            config = load_llm_config()
+            # 模式 2: 从环境变量 (.env) 加载
+            config = load_llm_config() # 这是一个 helper 函数，负责读取 .env 并解析
             validate_llm_config_dict(config)
             self.config = config
             # Model is already formatted by load_llm_config() via get_model_name()
+            # 在 load_llm_config 内部已经完成了模型名称的格式化
             self.model = config.get("model", "gpt-4o")
             self.setup_litellm_env()
             
         except ValueError as e:
             # Configuration validation errors should be LLMConfigError
+            # 捕获校验错误，并包装为自定义的 LLMConfigError，方便上层统一处理
             raise LLMConfigError(f"Invalid LLM configuration: {e}") from e
         except Exception as e:
             # Other errors (e.g., from load_llm_config) should also be LLMConfigError
@@ -241,6 +269,10 @@ class LLMAnalyzer:
         """
         Set up environment variables for LiteLLM based on config.
         LiteLLM reads from environment variables automatically.
+        根据配置自动设置 LiteLLM 所需的环境变量。
+        LiteLLM 是一个极其强大的库，它标准化了不同 LLM 供应商的接口，
+        但不同供应商需要的环境变量名千奇百怪（如 OPENAI_API_KEY vs AZURE_API_KEY）。
+        这个函数的作用就是充当“翻译官”，把统一的 config 字典翻译成各家厂商特定的环境变量。
         """
         if not self.config:
             return
@@ -249,6 +281,7 @@ class LLMAnalyzer:
         api_key = self.config.get("api_key")
         
         # Mapping table for providers that only need API key set
+        # 简单模式厂商映射表：这些厂商只需要一个 API Key 就能工作
         API_KEY_ENV_VARS = {
             "openai": "OPENAI_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
@@ -262,14 +295,17 @@ class LLMAnalyzer:
         }
         
         # Handle providers with simple API key mapping
+        # 场景 1：处理只需要 API Key 的标准厂商
         if provider in API_KEY_ENV_VARS:
             if api_key:
                 os.environ[API_KEY_ENV_VARS[provider]] = api_key
-                # Cohere also sets CO_API_KEY for compatibility
+                # 特殊处理：Cohere 有时使用 CO_API_KEY，为了兼容性多设置一个
                 if provider == "cohere":
                     os.environ["CO_API_KEY"] = api_key
         
         # Handle Azure (requires endpoint and api_version)
+        # 场景 2：处理 Azure OpenAI（微软云）
+        # Azure 比较特殊，除了 Key 还需要 Endpoint（资源地址）和 API Version
         elif provider == "azure":
             if api_key:
                 os.environ["AZURE_API_KEY"] = api_key
@@ -279,15 +315,19 @@ class LLMAnalyzer:
                 os.environ["AZURE_API_VERSION"] = self.config["api_version"]
         
         # Handle Bedrock (uses AWS credentials)
+        # 场景 3：处理 AWS Bedrock（亚马逊云）
+        # AWS 使用标准的 Access Key / Secret Key 认证体系，以及 Region（区域）
         elif provider == "bedrock":
             if api_key:
-                os.environ["AWS_ACCESS_KEY_ID"] = api_key
+                os.environ["AWS_ACCESS_KEY_ID"] = api_key # 复用 api_key 字段存储 Access Key
             if self.config.get("aws_secret_access_key"):
                 os.environ["AWS_SECRET_ACCESS_KEY"] = self.config["aws_secret_access_key"]
             if self.config.get("endpoint"):  # Endpoint contains AWS region
                 os.environ["AWS_REGION_NAME"] = self.config["endpoint"]
         
         # Handle Vertex AI (uses GCP credentials)
+        # 场景 4：处理 Google Vertex AI
+        # Google 通常依赖 GCP 项目 ID 和 Location，认证通常通过 ADC (Application Default Credentials) 自动处理
         elif provider == "vertex_ai":
             if self.config.get("gcp_project_id"):
                 os.environ["GCP_PROJECT_ID"] = self.config["gcp_project_id"]
@@ -296,11 +336,15 @@ class LLMAnalyzer:
             # GOOGLE_APPLICATION_CREDENTIALS should be set by user or gcloud auth
         
         # Handle Ollama (uses OLLAMA_BASE_URL)
+        # 场景 5：处理 Ollama（本地部署模型）
+        # Ollama 只需要指定服务地址（如 http://localhost:11434）
         elif provider == "ollama":
             if self.config.get("endpoint"):
                 os.environ["OLLAMA_BASE_URL"] = self.config["endpoint"]
         
         # Generic fallback for future providers that only require an API key
+        # 兜底策略：处理未知的新厂商
+        # 假设它们遵循 {PROVIDER}_API_KEY 的命名规范
         else:
             if api_key:
                 # Use standard LiteLLM convention: {PROVIDER}_API_KEY
@@ -316,6 +360,9 @@ class LLMAnalyzer:
         """
         Retrieve the function dictionary from a CSV (FunctionTree.csv) that matches
         the specified file and line coverage.
+        根据给定的文件路径和行号，查找该行代码属于哪个函数。
+        这是 CodeQL 分析结果反向定位的关键：当我们知道某一行有漏洞（CodeQL 告警），
+        我们需要知道它位于哪个函数体内，才能提取出整个函数的代码给 LLM 分析。
 
         Args:
             function_tree_file (str): Path to the FunctionTree.csv file.
@@ -328,16 +375,22 @@ class LLMAnalyzer:
         Raises:
             CodeQLError: If function tree file cannot be read (not found, permission denied, etc.).
         """
+        # CSV 列定义：这必须与 CodeQL 查询生成的 FunctionTree.csv 格式完全一致
         keys = ["function_name", "file", "start_line", "function_id", "end_line", "caller_id"]
         try:
             with open(function_tree_file, "r", encoding="utf-8") as f:
                 while True:
+                    # 逐行读取 CSV 文件，避免一次性加载大文件导致内存溢出
                     function = f.readline()
                     if not function:
                         break
+                    # 快速过滤：如果这一行不包含目标文件名，直接跳过，提高搜索速度
                     if file in function:
+                        # 使用正则拆分 CSV 行，处理可能存在的引号包裹的字段
                         row = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', function)
                         row_dict = dict(zip(keys, row))
+                        
+                        # 范围检查：判断目标行号 line 是否在当前函数的 [start_line, end_line] 区间内
                         if row_dict and row_dict["start_line"] and row_dict["end_line"]:
                             start = int(row_dict["start_line"])
                             end = int(row_dict["end_line"])
@@ -361,12 +414,17 @@ class LLMAnalyzer:
         """
         Retrieve a function by searching function_name in FunctionTree.csv.
         If not found, tries partial match if less_strict is True.
+        根据函数名查找函数定义。支持精确匹配和模糊匹配。
+        此函数不仅仅是查找名字，它还利用了 `all_function` 上下文来加速查找。
 
         Args:
             function_tree_file (str): Path to FunctionTree.csv.
             function_name (str): Desired function name (e.g., 'MyClass::MyFunc').
             all_function (List[Dict[str, Any]]): A list of known function dictionaries.
+                这个参数很关键：它包含了我们当前已经“认识”的函数列表。
+                算法会优先在这些已知函数的“邻居”（同一个文件或相关联的 ID）中查找，提高效率。
             less_strict (bool, optional): If True, use partial matching. Defaults to False.
+                如果为 True，只要包含该名字就算匹配（例如搜 "copy" 能匹配到 "safe_copy"）。
 
         Returns:
             Tuple[Union[str, Dict[str, str]], Optional[Dict[str, str]]]:
@@ -377,8 +435,11 @@ class LLMAnalyzer:
             CodeQLError: If function tree file cannot be read (not found, permission denied, etc.).
         """
         keys = ["function_name", "file", "start_line", "function_id", "end_line", "caller_id"]
+        # 预处理：去掉可能存在的类名前缀，只保留函数名本身
+        # 例如 "MyClass::process" -> "process"
         function_name_only = function_name.split("::")[-1]
 
+        # 遍历当前上下文中的已知函数
         for current_function in all_function:
             try:
                 with open(function_tree_file, "r", encoding="utf-8") as f:
@@ -386,6 +447,8 @@ class LLMAnalyzer:
                         row = f.readline()
                         if not row:
                             break
+                        # 优化策略：只检查那些 ID 包含在当前函数上下文中的记录
+                        # 这是一个基于 CodeQL 索引结构的优化，假设相关函数在 CSV 中可能具有某种关联性
                         if current_function["function_id"] in row:
                             row_split = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', row)
                             row_dict = dict(zip(keys, row_split))
@@ -393,6 +456,7 @@ class LLMAnalyzer:
                                 continue
 
                             candidate_name = row_dict["function_name"].replace("\"", "")
+                            # 匹配逻辑：精确匹配 OR (模糊匹配 AND 开启了模糊模式)
                             if (candidate_name == function_name_only
                                     or (less_strict and function_name_only in candidate_name)):
                                 return row_dict, current_function
@@ -595,6 +659,9 @@ class LLMAnalyzer:
     ) -> Union[str, Dict[str, str]]:
         """
         Return the caller function from function_tree_file that calls current_function.
+        获取当前函数的“父函数”（即调用者）。
+        利用 CodeQL 生成的调用图（Call Graph）信息，我们可以从当前函数向上回溯。
+        这在分析污点传播路径时至关重要（例如：此处的脏数据是从哪个上层函数传进来的？）。
 
         Args:
             function_tree_file (str): Path to FunctionTree.csv.
@@ -609,6 +676,7 @@ class LLMAnalyzer:
             CodeQLError: If function tree file cannot be read (not found, permission denied, etc.).
         """
         keys = ["function_name", "file", "start_line", "function_id", "end_line", "caller_id"]
+        # 获取当前函数记录中存储的 caller_id (通常是 CodeQL 内部生成的唯一标识符)
         caller_id = current_function["caller_id"].replace("\"", "").strip()
 
         try:
@@ -617,11 +685,14 @@ class LLMAnalyzer:
                     line = f.readline()
                     if not line:
                         break
+                    # 快速过滤：如果当前行不包含我们要找的 ID，直接跳过
                     if caller_id in line:
                         data = re.split(r',(?=(?:[^"]*"[^"]*")*[^"]*$)', line)
                         data_dict = dict(zip(keys, data))
                         if not data_dict:
                             continue
+                        # 核心匹配逻辑：找到那一行，它的 function_id 等于我们要找的 caller_id
+                        # 这意味着那一行描述的就是我们的父函数
                         if data_dict["function_id"].replace("\"", "").strip() == caller_id:
                             return data_dict
         except FileNotFoundError as e:
@@ -632,6 +703,8 @@ class LLMAnalyzer:
             raise CodeQLError(f"OS error while reading function tree file: {function_tree_file}") from e
 
         # Fallback if 'caller_id' is in format file:line
+        # 兼容性处理：有时 caller_id 不是一个数字 ID，而是一个 "文件:行号" 的格式
+        # 这种情况下，我们解析出行号，然后复用 get_function_by_line 来定位函数
         maybe_line = caller_id.split(":")
         if len(maybe_line) == 2:
             file_part, line_part = maybe_line
@@ -651,6 +724,8 @@ class LLMAnalyzer:
     ) -> str:
         """
         Return the snippet of code for the given current_function from the archived src.zip.
+        从 CodeQL 数据库自带的源码压缩包 (src.zip) 中提取指定函数的源代码。
+        这避免了我们需要单独去下载或解压原始仓库的麻烦，因为 CodeQL DB 已经内置了一份完整的源码快照。
 
         Args:
             db_path (str): Path to the CodeQL database directory.
@@ -667,14 +742,25 @@ class LLMAnalyzer:
             return str(current_function)
 
         src_zip = os.path.join(db_path, "src.zip")
+        # 路径修正：CSV 中的路径通常以 "/" 开头，但在 zip 包内是相对路径，所以去掉开头的 "/"
         file_path = current_function["file"].replace("\"", "")[1:]
+        
+        # 从 zip 包中读取整个文件的内容
         code_file = read_file_lines_from_zip(src_zip, file_path)
         lines = code_file.split("\n")
 
         start_line = int(current_function["start_line"])
         end_line = int(current_function["end_line"])
+        
+        # 切片提取：只保留属于该函数的行
         snippet_lines = lines[start_line - 1:end_line]
 
+        # 格式化输出：给每一行加上行号，方便 AI 引用
+        # 格式示例：
+        # file: src/main.c
+        # 105: int main() {
+        # 106:     return 0;
+        # 107: }
         snippet = "\n".join(
             f"{start_line - 1 + i}: {text}" for i, text in enumerate(snippet_lines)
         )
@@ -688,6 +774,10 @@ class LLMAnalyzer:
         """
         Query the LLM to check how caller's variables map to callee's parameters.
         For example, used for analyzing function call relationships.
+        专门调用 LLM 来进行“数据流映射分析”。
+        当 AI 沿着调用链回溯时，它不仅需要知道“函数 A 调用了函数 B”，
+        更需要知道“A 中的变量 x 是对应 B 中的参数 arg1 还是 arg2”。
+        这个函数就是让 LLM 来帮我们理清这层参数传递关系。
 
         Args:
             caller (str): The code snippet of the caller function.
@@ -699,6 +789,8 @@ class LLMAnalyzer:
         Raises:
             LLMApiError: If LLM API call fails (rate limits, timeouts, auth failures, etc.).
         """
+        # 专门设计的 Prompt：要求 AI 仅提取变量映射关系
+        # 格式示例：my_buffer (caller_name) -> dest_buf (callee_name)
         args_prompt = (
             "Given caller function and callee function.\n"
             "Write only what are the names of the vars in the caller that were sent to the callee "
@@ -714,6 +806,7 @@ class LLMAnalyzer:
         model_name = self.model if self.model else "gpt-4o"
         
         try:
+            # 发起一次轻量级的 LLM 调用（通常不需要很强的推理能力，甚至可以用更便宜的模型）
             response = litellm.completion(
                 model=model_name,
                 messages=[{"role": "user", "content": args_prompt}]
@@ -739,12 +832,16 @@ class LLMAnalyzer:
         functions: List[Dict[str, str]],
         db_path: str,
         temperature: float = 0.2,
-        top_p: float = 0.2
+        top_p: float = 0.2,
+        trace: bool = False
     ) -> Tuple[List[Dict[str, Any]], str]:
         """
         Main loop to keep querying the LLM with the MESSAGES context plus
         any new system instructions or tool calls, until a final answer with
         a recognized status code is reached or we exhaust a tool-call limit.
+        这是 LLM 分析引擎的“主循环” (Main Loop)。
+        它实现了一个完整的自主 Agent 流程：
+        思考 -> 决定调用工具 -> 执行工具 -> 观察结果 -> 再思考 -> ... -> 得出结论。
 
         Args:
             prompt (str): The user prompt for the LLM to process.
@@ -770,17 +867,40 @@ class LLMAnalyzer:
         
         got_answer = False
         db_path_clean = db_path.replace(" ", "")
-        all_functions = functions
+        all_functions = functions # 维护一个“已知函数”的上下文列表
 
+        # 初始化对话历史：加载预设的 System Prompts，并加入用户的初始漏洞描述
         messages: List[Dict[str, Any]] = self.MESSAGES[:]
         messages.append({"role": "user", "content": prompt})
 
         amount_of_tools = 0
         final_content = ""
+        iteration = 0
+        printed_idx = 0
 
+        # 进入自主思考循环，直到 AI 给出最终结论
         while not got_answer:
+            iteration += 1
+            print(f"[LLMAnalyzer] Iteration {iteration} start", flush=True)
+            print(f"[LLMAnalyzer] Conversation send (new messages={len(messages) - printed_idx})", flush=True)
+            for m in messages[printed_idx:]:
+                role = m.get("role")
+                name = m.get("name")
+                tool_call_id = m.get("tool_call_id")
+                print(f"[LLMAnalyzer] -> role={role} name={name if name else ''} tool_call_id={tool_call_id if tool_call_id else ''}", flush=True)
+                tc = m.get("tool_calls")
+                if tc:
+                    try:
+                        print(f"[LLMAnalyzer] -> tool_calls={json.dumps([{'name': x.function.name, 'arguments': x.function.arguments} for x in tc])}", flush=True)
+                    except Exception:
+                        print(f"[LLMAnalyzer] -> tool_calls={tc}", flush=True)
+                content = m.get("content")
+                if content is not None:
+                    print(content, flush=True)
+            printed_idx = len(messages)
             # Send the current messages + tools to the LLM endpoint
             try:
+                # 调用 LLM，传入完整的对话历史和可用的工具列表
                 response = litellm.completion(
                     model=self.model,
                     messages=messages,
@@ -788,45 +908,76 @@ class LLMAnalyzer:
                     temperature=temperature,
                     top_p=top_p
                 )
+                print(f"[LLMAnalyzer] Iteration {iteration} response received", flush=True)
             except litellm.RateLimitError as e:
+                print(f"[LLMAnalyzer] RateLimitError: {e}", flush=True)
                 raise LLMApiError(f"Rate limit exceeded for LLM API: {e}") from e
             except litellm.Timeout as e:
+                print(f"[LLMAnalyzer] Timeout: {e}", flush=True)
                 raise LLMApiError(f"LLM API request timed out: {e}") from e
             except litellm.AuthenticationError as e:
+                print(f"[LLMAnalyzer] AuthenticationError: {e}", flush=True)
                 raise LLMApiError(f"LLM API authentication failed: {e}") from e
             except litellm.APIError as e:
+                print(f"[LLMAnalyzer] APIError: {e}", flush=True)
                 raise LLMApiError(f"LLM API error: {e}") from e
             except Exception as e:
                 # Catch any other unexpected errors from LiteLLM
+                print(f"[LLMAnalyzer] UnexpectedError: {e}", flush=True)
                 raise LLMApiError(f"Unexpected error during LLM API call: {e}") from e
 
             content_obj = response.choices[0].message
+            # 将 AI 的回复（可能是文本，也可能是工具调用请求）加入对话历史
             messages.append({
                 "role": content_obj.role,
                 "content": content_obj.content,
                 "tool_calls": content_obj.tool_calls
             })
+            print(f"[LLMAnalyzer] Conversation recv (new messages=1)", flush=True)
+            print(f"[LLMAnalyzer] <- role={content_obj.role}", flush=True)
+            if content_obj.tool_calls:
+                try:
+                    print(f"[LLMAnalyzer] <- tool_calls={json.dumps([{'name': x.function.name, 'arguments': x.function.arguments} for x in content_obj.tool_calls])}", flush=True)
+                except Exception:
+                    print(f"[LLMAnalyzer] <- tool_calls={content_obj.tool_calls}", flush=True)
+            if content_obj.content is not None:
+                print(content_obj.content, flush=True)
+            printed_idx = len(messages)
 
             final_content = content_obj.content or ""
             tool_calls = content_obj.tool_calls
+            preview = (final_content[:200] + "...") if len(final_content) > 200 else final_content
+            has_tools = bool(tool_calls)
+            print(f"[LLMAnalyzer] Iteration {iteration} content_len={len(final_content)} has_tools={has_tools}", flush=True)
+            if preview:
+                print(f"[LLMAnalyzer] Iteration {iteration} preview: {preview}", flush=True)
 
+            # 分支 1：AI 没有调用工具，而是直接回复了文本
             if not tool_calls:
                 # Check if we have a recognized status code
+                # 检查回复中是否包含我们约定的状态码（如 1337, 1007）
                 if final_content and any(code in final_content for code in ["1337", "1007", "7331", "3713"]):
-                    got_answer = True
+                    print(f"[LLMAnalyzer] Iteration {iteration} status detected, finishing", flush=True)
+                    got_answer = True # 循环结束，任务完成
                 else:
+                    # 如果 AI 说了一堆废话但没给结论，系统强制提醒它遵守规范
                     messages.append({
                         "role": "system",
                         "content": "Please follow all the instructions!"
                     })
+                    print(f"[LLMAnalyzer] Iteration {iteration} no status, added follow-up reminder", flush=True)
+            # 分支 2：AI 请求调用工具
             else:
                 amount_of_tools += 1
                 arg_messages: List[Dict[str, Any]] = []
+                print(f"[LLMAnalyzer] Iteration {iteration} tool_calls={len(tool_calls)} total_tools_used={amount_of_tools}", flush=True)
 
+                # 处理每一个工具调用请求（有时 AI 会一次性请求多个工具并行执行）
                 for tc in tool_calls:
                     tool_call_id = tc.id
                     tool_function_name = tc.function.name
                     tool_args = tc.function.arguments
+                    print(f"[LLMAnalyzer] Tool request: {tool_function_name}", flush=True)
 
                     # Convert tool_args to a dict if it's a JSON string
                     if not isinstance(tool_args, dict):
@@ -834,10 +985,12 @@ class LLMAnalyzer:
                     else:
                         # Ensure consistent string for role=tool message
                         tc.function.arguments = json.dumps(tool_args)
+                    print(f"[LLMAnalyzer] Tool args: {tool_args}", flush=True)
 
                     response_msg = ""
 
                     # Evaluate which tool to call
+                    # 根据函数名分发到对应的 Python 方法
                     if tool_function_name == 'get_function_code' and "function_name" in tool_args:
                         child_function, parent_function = self.get_function_by_name(
                             function_tree_file, tool_args["function_name"], all_functions
@@ -846,7 +999,9 @@ class LLMAnalyzer:
                             all_functions.append(child_function)
                         child_code = self.extract_function_from_file(db_path_clean, child_function)
                         response_msg = child_code
+                        print(f"[LLMAnalyzer] get_function_code returned child", flush=True)
 
+                        # 增强逻辑：如果找到了函数，顺便自动分析一下调用参数映射关系
                         if isinstance(child_function, dict) and isinstance(parent_function, dict):
                             caller_code = self.extract_function_from_file(db_path_clean, parent_function)
                             args_content = self.map_func_args_by_llm(caller_code, child_code)
@@ -854,6 +1009,7 @@ class LLMAnalyzer:
                                 "role": args_content.role,
                                 "content": args_content.content
                             })
+                            print(f"[LLMAnalyzer] args mapping added", flush=True)
 
                     elif tool_function_name == 'get_caller_function':
                         caller_function = self.get_caller_function(function_tree_file, current_function)
@@ -862,10 +1018,12 @@ class LLMAnalyzer:
                         if isinstance(caller_function, dict):
                             all_functions.append(caller_function)
                             caller_code = self.extract_function_from_file(db_path_clean, caller_function)
+                            # 拼接提示词，明确告诉 AI 这是谁的调用者
                             response_msg = (
                                 f"Here is the caller function for '{current_function['function_name']}':\n"
                                 + caller_code
                             )
+                            # 同样自动进行参数映射分析
                             args_content = self.map_func_args_by_llm(
                                 caller_code,
                                 self.extract_function_from_file(db_path_clean, current_function)
@@ -874,7 +1032,9 @@ class LLMAnalyzer:
                                 "role": args_content.role,
                                 "content": args_content.content
                             })
+                            # 更新当前上下文焦点到调用者
                             current_function = caller_function
+                            print(f"[LLMAnalyzer] get_caller_function updated current", flush=True)
 
                     elif tool_function_name == 'get_macro' and "macro_name" in tool_args:
                         macro = self.get_macro(db_path_clean, tool_args["macro_name"])
@@ -882,6 +1042,7 @@ class LLMAnalyzer:
                             response_msg = macro["body"]
                         else:
                             response_msg = macro
+                        print(f"[LLMAnalyzer] get_macro processed", flush=True)
 
                     elif tool_function_name == 'get_global_var' and "global_var_name" in tool_args:
                         global_var = self.get_global_var(db_path_clean, tool_args["global_var_name"])
@@ -890,6 +1051,7 @@ class LLMAnalyzer:
                             response_msg = global_var_code
                         else:
                             response_msg = global_var
+                        print(f"[LLMAnalyzer] get_global_var processed", flush=True)
 
                     elif tool_function_name == 'get_class' and "object_name" in tool_args:
                         curr_class = self.get_class(db_path_clean, tool_args["object_name"])
@@ -898,13 +1060,16 @@ class LLMAnalyzer:
                             response_msg = class_code
                         else:
                             response_msg = curr_class
+                        print(f"[LLMAnalyzer] get_class processed", flush=True)
 
                     else:
                         response_msg = (
                             f"No matching tool '{tool_function_name}' or invalid args {tool_args}. "
                             "Try again."
                         )
+                        print(f"[LLMAnalyzer] unknown tool or args", flush=True)
 
+                    # 将工具执行结果封装为 role='tool' 的消息，加入对话历史
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
@@ -912,8 +1077,18 @@ class LLMAnalyzer:
                         "content": response_msg
                     })
 
+                # 将参数映射分析的结果也加入对话历史
                 messages += arg_messages
+                if arg_messages:
+                    print(f"[LLMAnalyzer] Conversation add args mapping (new messages={len(arg_messages)})", flush=True)
+                    for m in arg_messages:
+                        print(f"[LLMAnalyzer] -> role={m.get('role')}", flush=True)
+                        if m.get("content") is not None:
+                            print(m.get("content"), flush=True)
+                    printed_idx = len(messages)
 
+                # 安全熔断机制：防止 AI陷入无限循环调用工具
+                # 如果调用次数超过 6 次还没有结论，强制让它停止并给出“数据不足”的结论
                 if amount_of_tools >= 6:
                     messages.append({
                         "role": "system",
@@ -922,5 +1097,62 @@ class LLMAnalyzer:
                             "return the 'more data' status."
                         )
                     })
+                    print(f"[LLMAnalyzer] fuse triggered after {amount_of_tools} tool calls", flush=True)
 
         return messages, final_content
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="llm_analyzer", description="Run LLMAnalyzer standalone")
+    parser.add_argument("--db", required=True, help="Path to CodeQL database directory")
+    parser.add_argument("--function-tree", help="Path to FunctionTree.csv; defaults to <db>/FunctionTree.csv")
+    parser.add_argument("--file", required=True, help="File path as present in FunctionTree.csv")
+    parser.add_argument("--line", type=int, required=True, help="Line number inside the target function")
+    parser.add_argument("--prompt", default="Analyze the security impact of the issue.", help="Prompt to send to the LLM")
+    parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--top_p", type=float, default=0.2)
+    parser.add_argument("--trace", action="store_true")
+    args = parser.parse_args()
+
+    analyzer = LLMAnalyzer()
+    try:
+        print("[LLMAnalyzer] init client", flush=True)
+        analyzer.init_llm_client()
+    except LLMConfigError as e:
+        print(f"LLMConfigError: {e}")
+        sys.exit(1)
+
+    function_tree_file = args.function_tree if args.function_tree else os.path.join(args.db, "FunctionTree.csv")
+    print(f"[LLMAnalyzer] locate function from {function_tree_file}", flush=True)
+    try:
+        current_function = analyzer.get_function_by_line(function_tree_file, args.file, args.line)
+    except CodeQLError as e:
+        print(f"FunctionLocateError: {e}")
+        sys.exit(2)
+    if current_function is None:
+        print("FunctionNotFound: could not locate function by file and line")
+        sys.exit(2)
+    print(f"[LLMAnalyzer] function located: {current_function.get('function_name','<unknown>')}", flush=True)
+
+    functions = [current_function]
+    try:
+        print("[LLMAnalyzer] run analysis", flush=True)
+        messages, content = analyzer.run_llm_security_analysis(
+            prompt=args.prompt,
+            function_tree_file=function_tree_file,
+            current_function=current_function,
+            functions=functions,
+            db_path=args.db,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            trace=args.trace,
+        )
+    except (LLMApiError, CodeQLError) as e:
+        print(f"RunError: {e}")
+        sys.exit(3)
+
+    print(content if content else "")
+
+if __name__ == "__main__":
+    main()
+
+
